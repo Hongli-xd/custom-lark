@@ -32,7 +32,7 @@ import * as Lark from '@larksuiteoapi/node-sdk';
 import type { ClawdbotConfig } from 'openclaw/plugin-sdk';
 import type { ConfiguredLarkAccount } from './types';
 import { getLarkAccount, getEnabledLarkAccounts } from './accounts';
-import { LarkClient } from './lark-client';
+import { LarkClient, getResolvedConfig } from './lark-client';
 import { getTicket } from './lark-ticket';
 import { callWithUAT } from './uat-client';
 import { getStoredToken } from './token-store';
@@ -476,17 +476,9 @@ export function createToolClient(config: ClawdbotConfig, accountIndex = 0): Tool
 
   // 1. 解析账号
   //
-  // api.config (the `config` param) is scoped to the current channel/agent by openclaw,
-  // and may NOT contain the full `channels.feishu.accounts` sub-map.
-  // We must use the live config (LarkClient.runtime.config.loadConfig()) to resolve
-  // accounts correctly, otherwise getLarkAccount() falls back to the base (default) appId
-  // and corrupts the LarkClient cache for non-default accounts.
-  let resolveConfig = config;
-  try {
-    resolveConfig = LarkClient.runtime.config.loadConfig() as ClawdbotConfig;
-  } catch {
-    // runtime not yet initialised (e.g. during early startup) — fall back to passed config
-  }
+  // `config` is the closure-captured snapshot from plugin registration and may be
+  // stale after a hot-reload.  Use getResolvedConfig() to always get the live config.
+  const resolveConfig = getResolvedConfig(config);
 
   let account: ConfiguredLarkAccount | undefined;
 

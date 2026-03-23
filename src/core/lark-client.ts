@@ -435,3 +435,28 @@ export class LarkClient {
     });
   }
 }
+
+// ---------------------------------------------------------------------------
+// Config resolution helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns the freshest available config for account resolution.
+ *
+ * The `config` object captured in tool-registration closures may be stale
+ * after a hot-reload: openclaw re-initialises the runtime but the plugin
+ * closure still holds the old snapshot.  Calling
+ * `LarkClient.runtime.config.loadConfig()` always returns the current live
+ * config, so account lookups pick up any changes made since plugin load.
+ *
+ * @param fallback - Config to use when the runtime is not yet initialised
+ *   (e.g. during early startup before the first `LarkClient.runtime` attach).
+ */
+export function getResolvedConfig(fallback: ClawdbotConfig): ClawdbotConfig {
+  try {
+    return LarkClient.runtime.config.loadConfig() as ClawdbotConfig;
+  } catch {
+    // runtime not yet initialised — fall back to passed config
+    return fallback;
+  }
+}

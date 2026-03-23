@@ -11,7 +11,7 @@ import type { OpenClawPluginApi } from 'openclaw/plugin-sdk';
 import type { ClawdbotConfig } from 'openclaw/plugin-sdk';
 import type { Client as LarkSdkClient } from '@larksuiteoapi/node-sdk';
 import { getEnabledLarkAccounts, getLarkAccount } from '../core/accounts';
-import { LarkClient } from '../core/lark-client';
+import { LarkClient, getResolvedConfig } from '../core/lark-client';
 import type { LarkAccount } from '../core/types';
 import { getTicket } from '../core/lark-ticket';
 import { ToolClient, createToolClient } from '../core/tool-client';
@@ -50,24 +50,9 @@ export interface ToolContext {
 // 配置解析
 // ---------------------------------------------------------------------------
 
-/**
- * 获取最新的运行时配置，回退到传入的静态配置
- *
- * openclaw 传给插件的 `api.config` 是 channel 级别的快照，可能缺少
- * `channels.feishu.accounts` 子树。使用此函数替代直接访问 `config` 参数，
- * 确保始终使用完整的运行时配置进行账号解析。
- *
- * @param fallback - 当运行时未就绪时使用的回退配置
- * @returns 运行时配置，或回退配置
- */
-export function getResolvedConfig(fallback: ClawdbotConfig): ClawdbotConfig {
-  try {
-    return LarkClient.runtime.config.loadConfig() as ClawdbotConfig;
-  } catch {
-    // runtime not yet initialised — fall back to passed config
-    return fallback;
-  }
-}
+// getResolvedConfig is defined in lark-client.ts (core layer) so that both
+// tool-client.ts and this file can use it without a circular dependency.
+export { getResolvedConfig } from '../core/lark-client';
 
 // ---------------------------------------------------------------------------
 // 客户端管理
@@ -104,7 +89,7 @@ export function getResolvedConfig(fallback: ClawdbotConfig): ClawdbotConfig {
  */
 export function createClientGetter(config: ClawdbotConfig, accountIndex = 0): ClientGetter {
   return () => {
-    // api.config may be channel-scoped (no accounts sub-map); use live config for resolution.
+    // `config` may be stale after a hot-reload; use live config for account resolution.
     const resolveConfig = getResolvedConfig(config);
 
     // 优先使用 LarkTicket 中的 accountId 进行动态账号解析

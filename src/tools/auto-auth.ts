@@ -955,8 +955,8 @@ export async function handleCardAction(data: unknown, cfg: ClawdbotConfig, accou
  * @param cfg - OpenClaw 配置对象（从工具注册函数的闭包中获取）
  */
 export async function handleInvokeErrorWithAutoAuth(err: unknown, cfg: ClawdbotConfig) {
-  // api.config (cfg) is channel-scoped and lacks the accounts sub-map.
-  // Use live config for all account resolution and card dispatch.
+  // `cfg` is the closure-captured snapshot from plugin registration and may be
+  // stale after a hot-reload.  Use getResolvedConfig() to always get the live config.
   cfg = getResolvedConfig(cfg);
 
   const ticket = getTicket();
