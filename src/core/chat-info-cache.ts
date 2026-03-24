@@ -13,8 +13,21 @@
  */
 
 import type { ClawdbotConfig } from 'openclaw/plugin-sdk';
-import { LarkClient } from './lark-client';
 import { larkLogger } from './lark-logger';
+
+// ---------------------------------------------------------------------------
+// LarkClient injection — breaks circular dependency with lark-client.ts.
+// lark-client.ts calls injectLarkClient() at module init time, so the
+// reference is available before any message processing begins.
+// ---------------------------------------------------------------------------
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _LarkClient: any = null;
+
+/** @internal Called by lark-client.ts at module init time. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function injectLarkClient(cls: any): void {
+  _LarkClient = cls;
+}
 
 const log = larkLogger('core/chat-info-cache');
 
@@ -147,7 +160,8 @@ export async function getChatInfo(params: {
   if (cached) return cached;
 
   try {
-    const sdk = LarkClient.fromCfg(cfg, accountId).sdk;
+    if (!_LarkClient) throw new Error('LarkClient not injected — circular dependency broken?');
+    const sdk = _LarkClient.fromCfg(cfg, accountId).sdk;
     const response = await sdk.im.chat.get({
       path: { chat_id: chatId },
     });
