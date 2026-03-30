@@ -20,6 +20,7 @@ import { handleAskUserAction } from '../tools/ask-user-question';
 import { buildQueueKey, enqueueFeishuChatTask, getActiveDispatcher, hasActiveTask } from './chat-queue';
 import { extractRawTextFromEvent, isLikelyAbortText } from './abort-detect';
 import type { MonitorContext } from './types';
+import { shouldIntercept, handleBotCreation } from '../../skills/feishu-bot-creator/index.js';
 
 const elog = larkLogger('channel/event-handlers');
 
@@ -107,6 +108,25 @@ export async function handleMessageEvent(ctx: MonitorContext, data: unknown): Pr
       chatId,
       threadId,
       task: async () => {
+        // ---- feishu-bot-creator skill intercept ----
+        const rawContent = event.message?.content || '';
+        if (shouldIntercept(rawContent)) {
+          log(`feishu[${accountId}]: bot-creator skill intercepted message ${msgId}`);
+          try {
+            await handleBotCreation({
+              cfg: ctx.cfg,
+              accountId,
+              senderOpenId: event.sender?.sender_id?.open_id || '',
+              chatId: event.message?.chat_id || '',
+              chatType: (event.message?.chat_type as 'p2p' | 'group') || 'p2p',
+              messageId: event.message?.message_id,
+            });
+          } catch (err) {
+            error(`feishu[${accountId}]: bot-creator skill error: ${String(err)}`);
+          }
+          return; // do not dispatch to AI agent
+        }
+
         try {
           await withTicket(
             {
