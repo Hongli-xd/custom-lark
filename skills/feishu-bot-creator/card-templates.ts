@@ -14,8 +14,13 @@ type FeishuCard = {
 
 /**
  * Build the initial "扫码创建私人机器人" card
+ *
+ * @param qrCodeValue - Either a Feishu image_key (img_xxx) or a URL string.
+ *                      When it's an image_key the QR code image was already uploaded to Feishu.
+ *                      When it's a URL it will be rendered as a link fallback.
  */
-export function buildQRCodeCard(qrCodeUrl: string, verificationUrl: string, expireMinutes = 10): FeishuCard {
+export function buildQRCodeCard(qrCodeValue: string, verificationUrl: string, expireMinutes = 10): FeishuCard {
+  const isImageKey = qrCodeValue.startsWith('img_');
   return {
     config: { wide_screen_mode: true },
     header: {
@@ -28,13 +33,20 @@ export function buildQRCodeCard(qrCodeUrl: string, verificationUrl: string, expi
         content: '**请使用飞书扫码授权创建您的私人机器人**\n\n授权完成后，您的私人机器人将自动配置并启动。',
       },
       { tag: 'hr' },
-      {
-        tag: 'img',
-        img_key: qrCodeUrl.startsWith('https://')
-          ? `data:image/svg+xml;base64,${btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200"><text x="100" y="100" text-anchor="middle" font-size="12">QR Code</text></svg>`)}`
-          : qrCodeUrl,
-        alt: { tag: 'plain_text', content: '二维码' },
-      },
+      ...(isImageKey
+        ? [
+            {
+              tag: 'img',
+              img_key: qrCodeValue,
+              alt: { tag: 'plain_text', content: '二维码' },
+            },
+          ]
+        : [
+            {
+              tag: 'markdown',
+              content: `**扫码链接：**\n\`${qrCodeValue}\`\n\n请复制链接到飞书 App 内打开并扫码授权。`,
+            },
+          ]),
       {
         tag: 'markdown',
         content: `**扫码方式：**\n1. 打开飞书 App\n2. 扫描上方二维码\n3. 在授权页面确认创建机器人\n\n📋 **或点击下方链接：**\n\`${verificationUrl}\``,

@@ -9,9 +9,10 @@
  */
 
 import axios from 'axios';
+import QRCode from 'qrcode';
 import { FeishuDeviceAuth } from './device-flow';
 import { getManagerBotCredentials, finalizeNewBot } from './config-writer';
-import { buildQRCodeCard, buildSuccessCard, buildErrorCard, buildIntroCard } from './card-templates';
+import { buildQRCodeCard, buildSuccessCard, buildErrorCard } from './card-templates';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -52,10 +53,12 @@ export function isTriggerMessage(content: string): boolean {
 // Card sending helpers
 // ---------------------------------------------------------------------------
 
-async function sendCardToUser(
+async function deliverCard(
   managerAppId: string,
   managerAppSecret: string,
   userOpenId: string,
+  chatId: string,
+  chatType: 'p2p' | 'group',
   card: Record<string, unknown>
 ): Promise<string | null> {
   try {
@@ -68,17 +71,39 @@ async function sendCardToUser(
     const token = tokenRes.data?.tenant_access_token;
     if (!token) return null;
 
-    const msgRes = await axios.post(
-      'https://open.feishu.cn/open-apis/im/v1/messages',
-      {
-        receive_id: userOpenId,
-        receive_id_type: 'open_id',
+    let payload: Record<string, unknown>;
+    let receiveId: string;
+    let receiveIdType: string;
+
+    if (chatType === 'p2p') {
+      // P2P: send directly to user's open_id (session already exists since user messaged us)
+      receiveId = userOpenId;
+      receiveIdType = 'open_id';
+      payload = {
+        receive_id: receiveId,
+        receive_id_type: receiveIdType,
         msg_type: 'interactive',
         content: JSON.stringify(card),
-      },
+      };
+    } else {
+      // Group: send to group chat, mentioning the target user so they get notified
+      receiveId = chatId;
+      receiveIdType = 'chat_id';
+      const cardWithMention = injectAtUserIntoCard(card, userOpenId);
+      payload = {
+        receive_id: receiveId,
+        receive_id_type: receiveIdType,
+        msg_type: 'interactive',
+        content: JSON.stringify(cardWithMention),
+      };
+    }
+
+    const msgRes = await axios.post(
+      'https://open.feishu.cn/open-apis/im/v1/messages',
+      payload,
       {
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        params: { receive_id_type: 'open_id' },
+        params: { receive_id_type: receiveIdType },
         timeout: 15000,
       }
     );
@@ -90,6 +115,64 @@ async function sendCardToUser(
     return null;
   } catch (error) {
     console.error('[feishu-bot-creator] Send card error:', String(error));
+    return null;
+  }
+}
+
+/**
+ * Inject an @user element at the top of a card's elements so the target user
+ * gets notified even when the card is sent to a group chat.
+ */
+function injectAtUserIntoCard(card: Record<string, unknown>, userOpenId: string): Record<string, unknown> {
+  const atElement = {
+    tag: 'at',
+    user_id: userOpenId,
+  };
+  const elements = [atElement, { tag: 'hr' }, ...(card.elements as unknown[] as Record<string, unknown>[])];
+  return { ...card, elements };
+}
+
+/**
+ * Upload a PNG image buffer to Feishu and return the image_key.
+ */
+export async function uploadQRCodeImage(
+  managerAppId: string,
+  managerAppSecret: string,
+  imageBuffer: Buffer
+): Promise<string | null> {
+  try {
+    const tokenRes = await axios.post(
+      'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal',
+      { app_id: managerAppId, app_secret: managerAppSecret },
+      { timeout: 10000 }
+    );
+
+    const token = tokenRes.data?.tenant_access_token;
+    if (!token) return null;
+
+    const form = new FormData();
+    form.append('image_type', 'message');
+    form.append('image', new Blob([Uint8Array.from(imageBuffer)], { type: 'image/png' }), 'qrcode.png');
+
+    const uploadRes = await axios.post(
+      'https://open.feishu.cn/open-apis/im/v1/images',
+      form,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'multipart/form-data',
+        },
+        timeout: 15000,
+      }
+    );
+
+    if (uploadRes.data?.code === 0) {
+      return uploadRes.data.data?.image_key || null;
+    }
+    console.error('[feishu-bot-creator] Upload image failed:', uploadRes.data);
+    return null;
+  } catch (error) {
+    console.error('[feishu-bot-creator] Upload image error:', String(error));
     return null;
   }
 }
@@ -132,16 +215,59 @@ export async function handleBotCreation(
       console.log(`[feishu-bot-creator] OAuth 状态: ${status}`);
     });
 
-    auth.on('qrcode', (url) => {
+    auth.on('qrcode', async (qrUrl) => {
       console.log(`[feishu-bot-creator] 获取到二维码 URL`);
-      // Send intro card to user
-      const introCard = buildIntroCard();
-      sendCardToUser(
-        managerCreds.appId,
-        managerCreds.appSecret,
-        senderOpenId,
-        introCard as Record<string, unknown>
-      ).catch(() => {});
+      try {
+        // Generate QR code PNG buffer
+        const qrBuffer = await QRCode.toBuffer(qrUrl, {
+          type: 'png',
+          width: 256,
+          margin: 2,
+          errorCorrectionLevel: 'M',
+        });
+
+        // Upload to Feishu and get image_key
+        const imageKey = await uploadQRCodeImage(
+          managerCreds.appId,
+          managerCreds.appSecret,
+          qrBuffer
+        );
+
+        if (imageKey) {
+          const qrCard = buildQRCodeCard(imageKey, qrUrl);
+          deliverCard(
+            managerCreds.appId,
+            managerCreds.appSecret,
+            senderOpenId,
+            chatId,
+            chatType,
+            qrCard as Record<string, unknown>
+          ).catch(() => {});
+        } else {
+          // Fallback: send card with URL only
+          const qrCard = buildQRCodeCard(qrUrl, qrUrl);
+          deliverCard(
+            managerCreds.appId,
+            managerCreds.appSecret,
+            senderOpenId,
+            chatId,
+            chatType,
+            qrCard as Record<string, unknown>
+          ).catch(() => {});
+        }
+      } catch (err) {
+        console.error('[feishu-bot-creator] 生成二维码失败:', err);
+        // Fallback: send card with URL only
+        const qrCard = buildQRCodeCard(qrUrl, qrUrl);
+        deliverCard(
+          managerCreds.appId,
+          managerCreds.appSecret,
+          senderOpenId,
+          chatId,
+          chatType,
+          qrCard as Record<string, unknown>
+        ).catch(() => {});
+      }
     });
 
     const authResult = await auth.authorize(timeoutSecs);
@@ -158,10 +284,12 @@ export async function handleBotCreation(
     // Step 4: Send success card
     console.log('[feishu-bot-creator] 步骤 [4/4] 发送成功通知...');
     const successCard = buildSuccessCard(authResult.appId, authResult.domain, authResult.userOpenId);
-    const successMsgId = await sendCardToUser(
+    const successMsgId = await deliverCard(
       managerCreds.appId,
       managerCreds.appSecret,
       senderOpenId,
+      chatId,
+      chatType,
       successCard as Record<string, unknown>
     );
 
@@ -179,10 +307,12 @@ export async function handleBotCreation(
       const managerCreds = await getManagerBotCredentials();
       if (managerCreds) {
         const errorCard = buildErrorCard(errorMessage);
-        await sendCardToUser(
+        await deliverCard(
           managerCreds.appId,
           managerCreds.appSecret,
           senderOpenId,
+          chatId,
+          chatType,
           errorCard as Record<string, unknown>
         );
       }
